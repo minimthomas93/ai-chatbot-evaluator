@@ -55,53 +55,77 @@ def evaluate_chatbot(input_file):
         qa_evaluation = call_ai_with_retry(client,evaluator_prompt)
         time.sleep(3)  # Add a delay to avoid hitting rate limits
 
-        results.append(qa_evaluation)
+        results.append({
+            "tc_number": i + 1,
+            "prompt": tc,
+            "expected": expected[i],
+            "forbidden": forbidden[i],
+            "chatbot_response": chatbot_response,
+            "evaluation": qa_evaluation
+        })
 
     return results
 
 def save_report(results, output_file):
     doc = Document()
     doc.add_heading("Chatbot QA Evaluation Report", level=0)
-    for result in results:
-        doc.add_paragraph(result)
 
     #count the number of PASS and FAIL
-    pass_count = sum(1 for result in results if "PASS" in result)
+    pass_count = sum(1 for result in results if "PASS" in result["evaluation"].upper())
     fail_count = len(results) - pass_count
     score = (pass_count / len(results)) * 100 if results else 0
     print(f"Evaluation Summary - PASS: {pass_count}, FAIL: {fail_count}")
     print(f"Overall Score: {score:.2f}%")
 
-    # Summary section
     doc.add_heading("Summary", level=1)
     doc.add_paragraph(f"Total Test Cases: {len(results)}")
     doc.add_paragraph(f"Passed: {pass_count}")
     doc.add_paragraph(f"Failed: {fail_count}")
-    doc.add_paragraph(f"Quality Score: {score}%")
+    doc.add_paragraph(f"Quality Score: {score:.2f}%")
 
     doc.add_heading("Detailed Results", level=1)
-    for i, result in enumerate(results):
-        doc.add_heading(f"Test Case {i+1}", level=2)
-        doc.add_paragraph(result)
-    doc.save(output_file)
+    for result in results:
+        doc.add_heading(f"Test Case {result['tc_number']}", level=2)
+        doc.add_paragraph(f"Prompt: {result['prompt']}")
+        doc.add_paragraph(f"Expected: {result['expected']}")
+        doc.add_paragraph(f"Should NOT contain: {result['forbidden']}")
+        doc.add_paragraph(f"Chatbot Response: {result['chatbot_response']}")
+        doc.add_paragraph(f"Evaluation: {result['evaluation']}")
+    
+    doc.add_heading("Notes for QA Engineer", level=1)
+    doc.add_paragraph(
+        "This report was generated automatically using AI evaluation. "
+        "All FAIL cases should be manually verified before raising defects. "
+        "PASS cases should be spot-checked to ensure evaluation accuracy. "
+        "AI is your assistant — you are still the engineer."
+)
 
-def call_ai_with_retry(client,prompt,retries=3):
+    doc.save(output_file)
+    print(f"✅ Evaluation report saved to {output_file}")
+
+MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+
+def call_ai_with_retry(client, prompt, retries=3):
+    for model in MODELS:
         for attempt in range(retries):
             try:
                 api_response = client.models.generate_content(
-                    model="gemini-2.5-flash-lite",
+                    model=model,
                     contents=prompt,
                     config=types.GenerateContentConfig(temperature=0.1))
+                print(f"✅ Using model: {model}")
                 return api_response.text
             except Exception as e:
                 if "503" in str(e) or "UNAVAILABLE" in str(e):
-                    print(f"GEMINI IS BUSY, retrying in 10 seconds..(attempt {attempt+1}/{retries})")
+                    print(f"⚠️ {model} busy, retrying in 30 seconds... (attempt {attempt+1}/{retries})")
+                    time.sleep(30)
                 elif "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    print("❌ Daily quota exceeded. Please try again tomorrow.")
-                    sys.exit(1)  # ← exit immediately, no point retrying
+                    print(f"⚠️ {model} quota exceeded, trying next model...")
+                    break
                 else:
                     raise e
-        raise Exception("❌ Gemini API unavailable after 3 attempts. Please try again later.")
+    print("❌ All models exhausted. Please try again tomorrow.")
+    sys.exit(1)
 
 if __name__ == "__main__":
     load_dotenv()
